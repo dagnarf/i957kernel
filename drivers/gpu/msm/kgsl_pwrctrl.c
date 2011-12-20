@@ -71,7 +71,9 @@ static inline void kgsl_pwrctrl_tz_reset(void)
 	__secure_tz_entry(TZ_RESET_ID, 0);
 }
 
+#if defined (CONFIG_SEC_LIMIT_MAX_FREQ)
 extern unsigned long get_touch_boost_state(void);
+#endif
 
 #define KGSL_200MHZ_FREQ	200000000
 #define KGSL_266MHZ_FREQ	266667000
@@ -82,6 +84,7 @@ void kgsl_pwrctrl_pwrlevel_change(struct kgsl_device *device,
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 
 #if defined (CONFIG_MACH_SAMSUNG_TARGET)
+#if defined (CONFIG_SEC_LIMIT_MAX_FREQ)
 	// limit gpu clock (266Mhz->200Mhz)  at keyboard On
 	if ( !strcmp(device->name, "kgsl-3d0")) {
 		if ((get_touch_boost_state()==0) && (new_level==0)) {
@@ -92,6 +95,7 @@ void kgsl_pwrctrl_pwrlevel_change(struct kgsl_device *device,
 			pwr->pwrlevels[0].bus_freq = 3;
 		}
 	}
+#endif
 #endif
 	if (new_level < (pwr->num_pwrlevels - 1) &&
 		new_level >= pwr->thermal_pwrlevel &&

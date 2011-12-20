@@ -1126,8 +1126,9 @@ static struct clk_freq_tbl clk_tbl_gfx2d[] = {
 	F_GFX2D(145455000, MM_PLL1,  2, 11, NOMINAL),
 	F_GFX2D(160000000, MM_PLL1,  1,  5, NOMINAL),
 	F_GFX2D(177778000, MM_PLL1,  2,  9, NOMINAL),
-	F_GFX2D(200000000, MM_PLL1,  1,  4, NOMINAL),
+	//F_GFX2D(200000000, MM_PLL1,  1,  4, NOMINAL),
 	F_GFX2D(228571000, MM_PLL1,  2,  7, HIGH),
+	F_GFX2D(266667000, MM_PLL1,  2,  7, HIGH),
 	F_END,
 };
 
@@ -1193,7 +1194,8 @@ static struct clk_freq_tbl clk_tbl_gfx3d[] = {
 	F_GFX3D(200000000, MM_PLL1,  1,  4, NOMINAL),
 	F_GFX3D(228571000, MM_PLL1,  2,  7, NOMINAL),
 	F_GFX3D(266667000, MM_PLL1,  1,  3, HIGH),
-	F_GFX3D(320000000, MM_PLL1,  2,  5, HIGH),
+    F_GFX3D(300000000, MM_PLL1,  2,  5, OVER),
+	//F_GFX3D(320000000, MM_PLL1,  2,  5, HIGH),
 	F_END,
 };
 
@@ -2272,19 +2274,66 @@ struct clk_source soc_clk_sources[NUM_SRC] = {
 	CLK_SRC(PLL_8, voteable_pll_enable, PXO),
 };
 
+static int sys_vdd_uv[] = {
+	[NONE]    =  500000,
+	[LOW]     = 1000000,
+	[NOMINAL] = 1100000,
+	[HIGH]    = 1200000,
+	[OVER]    = 1300000,
+	[NUM_SYS_VDD_LEVELS] = 0,
+};
+
 /* Update the sys_vdd voltage given a level. */
 int soc_update_sys_vdd(enum sys_vdd_level level)
 {
-	static const int vdd_uv[] = {
-		[NONE]    =  500000,
-		[LOW]     = 1000000,
-		[NOMINAL] = 1100000,
-		[HIGH]    = 1200000,
-	};
-
 	return rpm_vreg_set_voltage(RPM_VREG_ID_PM8058_S1,
-				    RPM_VREG_VOTER3, vdd_uv[level], 1);
+				    RPM_VREG_VOTER3, sys_vdd_uv[level], 1);
 }
+
+#ifdef CONFIG_SYS_VOLTAGE_TABLE
+#define VDD_STEP			  12500 /* uV */
+#define MAX_SYS_VDD			1600000 /* uV */
+#define MIN_SYS_VDD		     500000 /* uV */
+ssize_t clock8x60_get_sys_vdd_levels_str(char *buf) {
+
+	int i, len = 0;
+
+	if (buf) {
+		for (i = 0; sys_vdd_uv[i]; i++) {
+			// dont use 0 as a possible level to allow for sweeping changes
+			len += sprintf(buf + len, "%8u: %8d\n", (i+1), sys_vdd_uv[i] );
+		}
+	}
+	return len;
+}
+
+void clock8x60_set_sys_vdd(unsigned int level, int vdd_uv) {
+
+	int i;
+	unsigned int new_sys_vdd_uv;
+	//pr_err("Enter clock8x60_set_sys_vdd\n");
+	//pr_err("level: %d vdd_uv: %d\n", level, vdd_uv);
+	
+	if (vdd_uv % VDD_STEP != 0) {
+		pr_err("Requested VDD not a valid step(multiple of %d): vdd_uv: %d\n", (unsigned int)VDD_STEP, vdd_uv);
+		return;
+	}
+		
+	for (i = 0; (sys_vdd_uv[i]); i++) {
+		if (level == 0)
+			new_sys_vdd_uv = min(max(((unsigned int)sys_vdd_uv[i] + vdd_uv), (unsigned int)MIN_SYS_VDD), (unsigned int)MAX_SYS_VDD);
+		else if (i == (level - 1))
+			new_sys_vdd_uv = min(max((unsigned int)vdd_uv, (unsigned int)MIN_SYS_VDD), (unsigned int)MAX_SYS_VDD);
+		else 
+			continue;
+
+		sys_vdd_uv[i] = new_sys_vdd_uv;
+		//pr_err("Would have set sys_vdd %d (%u) to Voltage: %u\n", i, (sys_vdd_uv[i]), new_sys_vdd_uv);
+	}
+	//pr_err("Exit clock8x60_set_sys_vdd\n");
+}
+
+#endif //CONFIG_SYS_VOLTAGE_TABLE
 
 /* Enable/disable a power rail associated with a clock. */
 int soc_set_pwr_rail(unsigned id, int enable)

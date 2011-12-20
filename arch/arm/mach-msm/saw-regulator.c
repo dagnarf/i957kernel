@@ -59,7 +59,7 @@
 #define PMIC_8901_SMPS_BAND_1_COMPENSATE(vprog)		((vprog) & 0xF8)
 
 /* Minimum core operating voltage */
-#define MIN_CORE_VOLTAGE		950000
+#define MIN_CORE_VOLTAGE		700000
 
 /* Specifies the PMIC internal slew rate in uV/us. */
 #define REGULATOR_SLEW_RATE		1250
