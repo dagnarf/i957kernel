@@ -52,7 +52,7 @@
  * The PLL hardware is capable of 384MHz to 1536MHz. The L_VALs
  * used for calibration should respect these limits. */
 #define L_VAL_SCPLL_CAL_MIN	0x08 /* =  432 MHz with 27MHz source */
-#define L_VAL_SCPLL_CAL_MAX	0x23 /* = 1890 MHz with 27MHz source */
+#define L_VAL_SCPLL_CAL_MAX	0x24 /* = 1890 MHz with 27MHz source */
 
 #define SCPLL_STEP			  54000 /* KHz */
 #define VDD_STEP			  12500 /* uV */
@@ -230,11 +230,12 @@ static struct clkctl_acpu_speed acpu_freq_tbl_fast[] = {
   { {1, 1}, 1728000,  ACPU_SCPLL, 0, 0, 1, 0x20, L2(20), 1275000, 0x03006000},
   { {1, 1}, 1782000,  ACPU_SCPLL, 0, 0, 1, 0x21, L2(20), 1300000, 0x03006000},
   { {1, 1}, 1836000,  ACPU_SCPLL, 0, 0, 1, 0x22, L2(20), 1300000, 0x03006000},
-
+  { {1, 1}, 1890000,  ACPU_SCPLL, 0, 0, 1, 0x23, L2(20), 1325000, 0x03006000},
+  { {1, 1}, 1944000,  ACPU_SCPLL, 0, 0, 1, 0x24, L2(20), 1350000, 0x03006000},
   { {0, 0}, 0 },
 };
 
-#define TABLE_SIZE 16
+#define TABLE_SIZE 18
 
 /* acpu_freq_tbl row to use when reconfiguring SC/L2 PLLs. */
 #define CAL_IDX 1
