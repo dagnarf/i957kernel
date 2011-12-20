@@ -25,18 +25,21 @@
 #include <linux/input.h>
 #include <linux/workqueue.h>
 #include <linux/slab.h>
+#include <linux/earlysuspend.h>
+
+//#define _LIMIT_LCD_OFF_CPU_MAX_FREQ_
 
 /*
  * dbs is used in this file as a shortform for demandbased switching
  * It helps to keep variable names smaller, simpler
  */
 
-#define DEF_FREQUENCY_DOWN_DIFFERENTIAL		(10)
-#define DEF_FREQUENCY_UP_THRESHOLD		(80)
+#define DEF_FREQUENCY_DOWN_DIFFERENTIAL		(17)
+#define DEF_FREQUENCY_UP_THRESHOLD			(63)
 #define DEF_SAMPLING_DOWN_FACTOR		(1)
 #define MAX_SAMPLING_DOWN_FACTOR		(100000)
 #define MICRO_FREQUENCY_DOWN_DIFFERENTIAL	(3)
-#define MICRO_FREQUENCY_UP_THRESHOLD		(95)
+#define MICRO_FREQUENCY_UP_THRESHOLD		(80)
 #define MICRO_FREQUENCY_MIN_SAMPLE_RATE		(10000)
 #define MIN_FREQUENCY_UP_THRESHOLD		(11)
 #define MAX_FREQUENCY_UP_THRESHOLD		(100)
@@ -63,6 +66,13 @@ static unsigned int min_sampling_rate;
 static void do_dbs_timer(struct work_struct *work);
 static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 				unsigned int event);
+
+#ifdef _LIMIT_LCD_OFF_CPU_MAX_FREQ_
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static struct early_suspend cpufreq_gov_early_suspend;
+static unsigned int cpufreq_gov_lcd_status;
+#endif
+#endif
 
 #ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND
 static
@@ -107,9 +117,6 @@ static unsigned int dbs_enable;	/* number of CPUs using this policy */
  * different CPUs. It protects dbs_enable in governor start/stop.
  */
 static DEFINE_MUTEX(dbs_mutex);
-#ifdef CONFIG_SEC_LIMIT_MAX_FREQ
-static DEFINE_MUTEX(lmf_mutex);
-#endif
 
 static struct workqueue_struct	*kondemand_wq;
 
@@ -277,8 +284,6 @@ show_one(ignore_nice_load, ignore_nice);
 show_one(powersave_bias, powersave_bias);
 
 #ifdef CONFIG_SEC_LIMIT_MAX_FREQ // limit max freq
-void set_touch_boost_state(bool onOff);
-unsigned long get_touch_boost_state(void);
 void set_lmf_browser_state(bool onOff);
 void set_lmf_temp_state(bool onOff);
 void set_lmf_active_load(unsigned long freq);
@@ -310,12 +315,6 @@ static ssize_t show_lmf_inactive_load(struct kobject *kobj,
 				      struct attribute *attr, char *buf)
 {
 	return sprintf(buf, "%ld\n", get_lmf_inactive_load());
-}
-
-static ssize_t show_touch_boost(struct kobject *kobj,
-				      struct attribute *attr, char *buf)
-{
-	return sprintf(buf, "%u\n", get_touch_boost_state());
 }
 #endif
 
@@ -499,23 +498,6 @@ static ssize_t store_powersave_bias(struct kobject *a, struct attribute *b,
 }
 
 #ifdef CONFIG_SEC_LIMIT_MAX_FREQ // limit max freq
-static ssize_t store_touch_boost(struct kobject *a, struct attribute *b,
-				   const char *buf, size_t count)
-{
-	unsigned int input;
-	int ret;
-
-	ret = sscanf(buf, "%u", &input);
-	if (ret != 1)
-		return -EINVAL;
-
-	mutex_lock(&lmf_mutex);
-	set_touch_boost_state(input);
-	mutex_unlock(&lmf_mutex);
-
-	return count;
-}
-
 static ssize_t store_lmf_temp(struct kobject *a, struct attribute *b,
 				   const char *buf, size_t count)
 {
@@ -526,9 +508,9 @@ static ssize_t store_lmf_temp(struct kobject *a, struct attribute *b,
 	if (ret != 1)
 		return -EINVAL;
 
-	mutex_lock(&lmf_mutex);
+	mutex_lock(&dbs_mutex);
 	set_lmf_temp_state(input);
-	mutex_unlock(&lmf_mutex);
+	mutex_unlock(&dbs_mutex);
 
 	return count;
 }
@@ -543,9 +525,9 @@ static ssize_t store_lmf_browser(struct kobject *a, struct attribute *b,
 	if (ret != 1)
 		return -EINVAL;
 
-	mutex_lock(&lmf_mutex);
+	mutex_lock(&dbs_mutex);
 	set_lmf_browser_state(input);
-	mutex_unlock(&lmf_mutex);
+	mutex_unlock(&dbs_mutex);
 
 	return count;
 }
@@ -560,9 +542,9 @@ static ssize_t store_lmf_active_load(struct kobject *a, struct attribute *b,
 	if (ret != 1)
 		return -EINVAL;
 
-	mutex_lock(&lmf_mutex);
+	mutex_lock(&dbs_mutex);
 	set_lmf_active_load(input);
-	mutex_unlock(&lmf_mutex);
+	mutex_unlock(&dbs_mutex);
 
 	return count;
 }
@@ -577,9 +559,9 @@ static ssize_t store_lmf_inactive_load(struct kobject *a, struct attribute *b,
 	if (ret != 1)
 		return -EINVAL;
 
-	mutex_lock(&lmf_mutex);
+	mutex_lock(&dbs_mutex);
 	set_lmf_inactive_load(input);
-	mutex_unlock(&lmf_mutex);
+	mutex_unlock(&dbs_mutex);
 
 	return count;
 }
@@ -597,7 +579,6 @@ define_one_global_rw(lmf_temp);
 define_one_global_rw(lmf_browser);
 define_one_global_rw(lmf_active_load);
 define_one_global_rw(lmf_inactive_load);
-define_one_global_rw(touch_boost);
 #endif
 static struct attribute *dbs_attributes[] = {
 	&sampling_rate_max.attr,
@@ -614,7 +595,6 @@ static struct attribute *dbs_attributes[] = {
 	&lmf_browser.attr,
 	&lmf_active_load.attr,
 	&lmf_inactive_load.attr,
-	&touch_boost.attr,
 #endif
 	NULL
 };
@@ -674,158 +654,6 @@ static void dbs_freq_increase(struct cpufreq_policy *p, unsigned int freq)
 			CPUFREQ_RELATION_L : CPUFREQ_RELATION_H);
 }
 
-
-
-
-
-#ifdef CONFIG_SEC_LIMIT_MAX_FREQ // limit max freq
-
-#include "../../kernel/power/power.h"
-//#include <linux/k3dh.h>
-enum {	
-	SET_MIN = 0,	
-	SET_MAX
-};
-
-enum {	
-	BOOT_CPU = 0,	
-	NON_BOOT_CPU
-};
-
-#define SAMPLE_DURATION_MSEC	(10*1000) // 10 secs >= 10000 msec
-#define ACTIVE_DURATION_MSEC	(10*60*1000) // 10 mins
-#define INACTIVE_DURATION_MSEC	(2*60*1000) // 2 mins
-#define MAX_ACTIVE_FREQ_LIMIT	65 // %
-#define MAX_INACTIVE_FREQ_LIMIT	45 // %
-#define ACTIVE_MAX_FREQ			1512000 // 1.5GHz
-#define INACTIVE_MAX_FREQ		1026000	// 1.0GHZ
-
-#define NUM_ACTIVE_LOAD_ARRAY	(ACTIVE_DURATION_MSEC/SAMPLE_DURATION_MSEC)
-#define NUM_INACTIVE_LOAD_ARRAY	(INACTIVE_DURATION_MSEC/SAMPLE_DURATION_MSEC)
-
-static bool lmf_browser_state = false;
-static bool lmf_temp_state = true; // temp is not used now
-static bool touch_boost_state = true;
-
-static unsigned long lmf_active_load_limit = MAX_ACTIVE_FREQ_LIMIT;
-static unsigned long lmf_inactive_load_limit = MAX_INACTIVE_FREQ_LIMIT;
-
-static unsigned long jiffies_old = 0;
-static unsigned long time_int = 0;
-static unsigned long time_int1 = 0;
-static unsigned long load_state_total0  = 0;
-static unsigned long load_state_total1  = 0;
-static unsigned long load_limit_index = 0;	
-static unsigned long load_limit_total[NUM_ACTIVE_LOAD_ARRAY];
-static unsigned long msecs_limit_total = 0;
-static bool active_state = true;
-static bool lmf_old_state = false;
-static int lcd_status=0;
-
-extern int cpufreq_set_limits(int cpu, unsigned int limit, unsigned int value);
-extern int cpufreq_set_limits_off(int cpu, unsigned int limit, unsigned int value);
-extern suspend_state_t get_suspend_state(void);
-extern int get_sensor_fast_polling(void);
-void set_lmf_browser_state(bool onOff)
-{
-	if (onOff)
-		lmf_browser_state = true;
-	else
-		lmf_browser_state = false;
-}
-
-void set_lmf_temp_state(bool onOff)
-{
-	if (onOff)
-		lmf_temp_state = true;
-	else
-		lmf_temp_state = false;
-}
-
-void set_lmf_active_load(unsigned long freq)
-{
-	lmf_active_load_limit = freq;
-}
-
-void set_lmf_inactive_load(unsigned long freq)
-{
-	lmf_inactive_load_limit = freq;
-}
-
-bool get_lmf_browser_state(void)
-{
-	return lmf_browser_state;
-}
-
-bool get_lmf_temp_state(void)
-{
-	return lmf_temp_state;
-}
-
-unsigned long get_lmf_active_load(void)
-{
-	return lmf_active_load_limit;
-}
-
-unsigned long get_lmf_inactive_load(void)
-{
-	return lmf_inactive_load_limit;
-}
-
-void set_touch_boost_state(bool onOff)
-{
-	if (onOff)
-	{
-		touch_boost_state = true;
-#if defined (CONFIG_TARGET_LOCALE_USA_ATT) || defined (CONFIG_TARGET_LOCALE_JPN_NTT) \
-	|| defined (CONFIG_TARGET_LOCALE_KOR_SKT) || defined (CONFIG_TARGET_LOCALE_KOR_KT) || defined (CONFIG_TARGET_LOCALE_KOR_LGU)
-		if (lmf_browser_state)
-		{
-			cpufreq_set_limits(0, 1, 1512000);
-			if (cpu_online(1))
-			{
-					printk(KERN_ERR "cpu1 online limits 1.0Ghz \n");
-					cpufreq_set_limits(1, 1, 1512000);
-			}
-			else
-			{
-					printk(KERN_ERR "cpu1 offline limits 1.0Ghz \n");
-					cpufreq_set_limits_off(1, 1, 1512000);
-			}
-		}
-#endif
-	}
-	else
-	{
-                touch_boost_state = false;
-#if defined (CONFIG_TARGET_LOCALE_USA_ATT) || defined (CONFIG_TARGET_LOCALE_JPN_NTT) \
-	|| defined (CONFIG_TARGET_LOCALE_KOR_SKT) || defined (CONFIG_TARGET_LOCALE_KOR_KT) || defined (CONFIG_TARGET_LOCALE_KOR_LGU)
-
-		if (lmf_browser_state)
-		{
-			cpufreq_set_limits(0, 1, 1026000);
-			if (cpu_online(1))
-			{
-					printk(KERN_ERR "cpu1 online limits 1.0Ghz \n");
-					cpufreq_set_limits(1, 1, 1026000);
-			}
-		else
-			{
-					printk(KERN_ERR "cpu1 offline limits 1.0Ghz \n");
-					cpufreq_set_limits_off(1, 1, 1026000);
-			}
-		}
-#endif
-}
-}
-
-unsigned long get_touch_boost_state(void)
-{
-	return touch_boost_state;
-}
-
-#endif
-
 static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 {
 	unsigned int max_load_freq;
@@ -838,10 +666,10 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 
 	/*
 	 * Every sampling_rate, we check, if current idle time is less
-	 * than 20% (default), then we try to increase frequency
+	 * than 37% (default), then we try to increase frequency
 	 * Every sampling_rate, we look for a the lowest
 	 * frequency which can sustain the load while keeping idle time over
-	 * 30%. If such a frequency exist, we try to decrease to this frequency.
+	 * 50%. If such a frequency exist, we try to decrease to this frequency.
 	 *
 	 * Any frequency increase takes it to the maximum frequency.
 	 * Frequency reduction happens at minimum steps of
@@ -898,19 +726,9 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 		 * the system is actually idle. So subtract the iowait time
 		 * from the cpu idle time.
 		 */
-#ifdef CONFIG_SEC_LIMIT_MAX_FREQ
-		// exclude iowait time with condition of browser, 3d game
-		if (dbs_tuners_ins.io_is_busy && idle_time >= iowait_time && !(get_sensor_fast_polling()==1))
-		{
-			idle_time -= iowait_time;
-		//		printk("normal mode\n");
-		}
-		//else
-		//	printk("game, lmf mode\n");
-#else
+
 		if (dbs_tuners_ins.io_is_busy && idle_time >= iowait_time)
 			idle_time -= iowait_time;
-#endif
 
 		if (unlikely(!wall_time || wall_time < idle_time))
 			continue;
@@ -925,30 +743,15 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 		if (load_freq > max_load_freq)
 			max_load_freq = load_freq;
 	}
+
 	/* Check for frequency increase */
 	if (max_load_freq > dbs_tuners_ins.up_threshold * policy->cur) {
-
-/* In case of increase to max freq., freq. scales by 2 step for reducing the current consumption*/
-#if defined (CONFIG_TARGET_LOCALE_USA_ATT) || defined (CONFIG_TARGET_LOCALE_JPN_NTT) \
-	|| defined (CONFIG_TARGET_LOCALE_KOR_SKT) || defined (CONFIG_TARGET_LOCALE_KOR_KT) || defined (CONFIG_TARGET_LOCALE_KOR_LGU) || defined(CONFIG_TARGET_LOCALE_EUR_OPEN)
-		/* If switching to max speed, apply sampling_down_factor */
-		if (policy->cur < policy->max) {
-			if (policy->cur < 540000) dbs_freq_increase(policy, 810000);
-			else if (policy->cur < 864000) dbs_freq_increase(policy, 1026000);
-			else {
-				this_dbs_info->rate_mult = dbs_tuners_ins.sampling_down_factor;
-				dbs_freq_increase(policy, policy->max);
-			}
-		}
-		return;
-#else
 		/* If switching to max speed, apply sampling_down_factor */
 		if (policy->cur < policy->max)
 			this_dbs_info->rate_mult =
 				dbs_tuners_ins.sampling_down_factor;
-	                         	dbs_freq_increase(policy, policy->max);
+		dbs_freq_increase(policy, policy->max);
 		return;
-#endif
 	}
 
 	/* Check for frequency decrease */
@@ -987,6 +790,98 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 	}
 }
 
+#ifdef CONFIG_SEC_LIMIT_MAX_FREQ // limit max freq
+
+#include "../../kernel/power/power.h"
+
+enum {	
+	SET_MIN = 0,	
+	SET_MAX
+};
+
+enum {	
+	BOOT_CPU = 0,	
+	NON_BOOT_CPU
+};
+
+#define SAMPLE_DURATION_MSEC	(10*1000) // 10 secs >= 10000 msec
+#define ACTIVE_DURATION_MSEC	(10*60*1000) // 10 mins
+#define INACTIVE_DURATION_MSEC	(2*60*1000) // 2 mins
+#define MAX_ACTIVE_FREQ_LIMIT	65 // %
+#define MAX_INACTIVE_FREQ_LIMIT	45 // %
+#define ACTIVE_MAX_FREQ			1512000 // 1.5GHz
+#define INACTIVE_MAX_FREQ		1080000	// 1.0GHZ
+
+#define NUM_ACTIVE_LOAD_ARRAY	(ACTIVE_DURATION_MSEC/SAMPLE_DURATION_MSEC)
+#define NUM_INACTIVE_LOAD_ARRAY	(INACTIVE_DURATION_MSEC/SAMPLE_DURATION_MSEC)
+
+static bool lmf_browser_state = false;
+static bool lmf_temp_state = true; // temp is not used now
+
+static unsigned long lmf_active_load_limit = MAX_ACTIVE_FREQ_LIMIT;
+static unsigned long lmf_inactive_load_limit = MAX_INACTIVE_FREQ_LIMIT;
+
+static unsigned long jiffies_old = 0;
+static unsigned long time_int = 0;
+static unsigned long time_int1 = 0;
+static unsigned long load_state_total0  = 0;
+static unsigned long load_state_total1  = 0;
+static unsigned long load_limit_index = 0;	
+static unsigned long load_limit_total[NUM_ACTIVE_LOAD_ARRAY];
+static unsigned long msecs_limit_total = 0;
+static bool active_state = true;
+static bool lmf_old_state = false;
+
+extern int cpufreq_set_limits(int cpu, unsigned int limit, unsigned int value);
+extern int cpufreq_set_limits_off(int cpu, unsigned int limit, unsigned int value);
+extern suspend_state_t get_suspend_state(void);
+
+void set_lmf_browser_state(bool onOff)
+{
+	if (onOff)
+		lmf_browser_state = true;
+	else
+		lmf_browser_state = false;
+}
+
+void set_lmf_temp_state(bool onOff)
+{
+	if (onOff)
+		lmf_temp_state = true;
+	else
+		lmf_temp_state = false;
+}
+
+void set_lmf_active_load(unsigned long freq)
+{
+	lmf_active_load_limit = freq;
+}
+
+void set_lmf_inactive_load(unsigned long freq)
+{
+	lmf_inactive_load_limit = freq;
+}
+
+bool get_lmf_browser_state(void)
+{
+	return lmf_browser_state;
+}
+
+bool get_lmf_temp_state(void)
+{
+	return lmf_temp_state;
+}
+
+unsigned long get_lmf_active_load(void)
+{
+	return lmf_active_load_limit;
+}
+
+unsigned long get_lmf_inactive_load(void)
+{
+	return lmf_inactive_load_limit;
+}
+#endif
 
 static void do_dbs_timer(struct work_struct *work)
 {
@@ -994,7 +889,6 @@ static void do_dbs_timer(struct work_struct *work)
 		container_of(work, struct cpu_dbs_info_s, work.work);
 	unsigned int cpu = dbs_info->cpu;
 	int sample_type = dbs_info->sample_type;
-	int sensor_poll_ret;
 
 	/* We want all CPUs to do sampling nearly on same jiffy */
 	int delay = usecs_to_jiffies(dbs_tuners_ins.sampling_rate
@@ -1004,6 +898,7 @@ static void do_dbs_timer(struct work_struct *work)
 		delay -= jiffies % delay;
 
 #ifdef CONFIG_SEC_LIMIT_MAX_FREQ // limit max freq
+
 #ifdef CONFIG_HAS_EARLYSUSPEND
 #ifdef _LIMIT_LCD_OFF_CPU_MAX_FREQ_
 	if (!lmf_browser_state || !lmf_temp_state || !cpufreq_gov_lcd_status)
@@ -1047,7 +942,6 @@ static void do_dbs_timer(struct work_struct *work)
 	}
 	else // lmf_browser_state && lmf_temp_state -> TRUE
 	{
-		
 		struct cpufreq_policy *policy;
 		unsigned long load_state_cpu = 0;
 		unsigned int delay_msec = 0;
@@ -1127,7 +1021,7 @@ static void do_dbs_timer(struct work_struct *work)
 
 							average = total_load / NUM_ACTIVE_LOAD_ARRAY;
 							average_dec = total_load % NUM_ACTIVE_LOAD_ARRAY;
-						//	printk("LMF:ACTIVE: total_avg = %ld.%ld\n", average, average_dec);
+							//printk("LMF:ACTIVE: total_avg = %ld.%ld\n", average, average_dec);
 
 							if (average > lmf_active_load_limit)
 							{
@@ -1167,7 +1061,7 @@ static void do_dbs_timer(struct work_struct *work)
 
 							average = total_load / NUM_INACTIVE_LOAD_ARRAY;
 							average_dec = total_load % NUM_INACTIVE_LOAD_ARRAY;
-						//	printk("LMF:INACTIVE: total_avg = %ld.%ld\n", average, average_dec);
+							//printk("LMF:INACTIVE: total_avg = %ld.%ld\n", average, average_dec);
 
 							if (average < lmf_inactive_load_limit)
 							{
@@ -1286,17 +1180,12 @@ static DECLARE_WORK(dbs_refresh_work, dbs_refresh_callback);
 static void dbs_input_event(struct input_handle *handle, unsigned int type,
 		unsigned int code, int value)
 {
-        // samsung feature
+#if 1 // samsung feature
 	/* only sec touchevent */
 	if(strncmp(handle->dev->name, "sec_touchscreen", strlen("sec_touchscreen")))
 		return;
-
-#ifdef CONFIG_SEC_LIMIT_MAX_FREQ
-        if (get_touch_boost_state() == 0)
-            return;
 #endif
 
-	if (code==ABS_MT_TOUCH_MAJOR && type == EV_ABS && value!=0)
 	schedule_work_on(0, &dbs_refresh_work);
 }
 
@@ -1337,10 +1226,6 @@ static void dbs_input_disconnect(struct input_handle *handle)
 	kfree(handle);
 }
 
-bool dbs_input_match(struct input_handler *handler, struct input_dev *dev)
-{
-	return !strncmp(dev->name, "sec_touchscreen", strlen("sec_touchscreen"));
-}
 static const struct input_device_id dbs_ids[] = {
 	{ .driver_info = 1 },
 	{ },
@@ -1350,7 +1235,6 @@ static struct input_handler dbs_input_handler = {
 	.event		= dbs_input_event,
 	.connect	= dbs_input_connect,
 	.disconnect	= dbs_input_disconnect,
-	.match		= dbs_input_match,
 	.name		= "cpufreq_ond",
 	.id_table	= dbs_ids,
 };
@@ -1458,6 +1342,24 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 	return 0;
 }
 
+#ifdef _LIMIT_LCD_OFF_CPU_MAX_FREQ_
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static void cpufreq_gov_suspend(struct early_suspend *h)
+{
+	cpufreq_gov_lcd_status = 0;
+
+	pr_info("%s : cpufreq_gov_lcd_status %d\n", __func__, cpufreq_gov_lcd_status);
+}
+
+static void cpufreq_gov_resume(struct early_suspend *h)
+{
+	cpufreq_gov_lcd_status = 1;
+
+	pr_info("%s : cpufreq_gov_lcd_status %d\n", __func__, cpufreq_gov_lcd_status);
+}
+#endif
+#endif
+
 static int __init cpufreq_gov_dbs_init(void)
 {
 	int err;
@@ -1492,6 +1394,18 @@ static int __init cpufreq_gov_dbs_init(void)
 	err = cpufreq_register_governor(&cpufreq_gov_ondemand);
 	if (err)
 		destroy_workqueue(kondemand_wq);
+
+#ifdef _LIMIT_LCD_OFF_CPU_MAX_FREQ_
+#ifdef CONFIG_HAS_EARLYSUSPEND
+	cpufreq_gov_lcd_status = 1;
+
+	cpufreq_gov_early_suspend.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
+
+	cpufreq_gov_early_suspend.suspend = cpufreq_gov_suspend;
+	cpufreq_gov_early_suspend.resume = cpufreq_gov_resume;
+	register_early_suspend(&cpufreq_gov_early_suspend);
+#endif
+#endif
 
 	return err;
 }

@@ -2217,9 +2217,28 @@ int cpufreq_set_limits(int cpu, unsigned int limit, unsigned int value)
 	memcpy(&new_policy, cur_policy, sizeof(struct cpufreq_policy));
 	
 	if (limit == SET_MAX)
+	{
+		// for app boost = DVFS lock
+		if (cur_policy->min > value)
+		{
+			new_policy.min = value;
+			ret = __cpufreq_set_policy(cur_policy, &new_policy);
+			if(ret < 0) 	
+				goto out_unlock;
+
+			cur_policy->user_policy.min = cur_policy->min;
+		}
+
 		new_policy.max = value;	
+	}
 	else
+	{
+		// no other cases to change min value, now
+		if (cur_policy->max < value)
+			value = cur_policy->max;
+
 		new_policy.min = value;
+	}
 	
 	ret = __cpufreq_set_policy(cur_policy, &new_policy);
 	if(ret < 0)		
